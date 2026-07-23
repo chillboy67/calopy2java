@@ -1,0 +1,16 @@
+.idea/
+**/__pycache__/
+venv/
+
+*.iml
+.Rproj.user
+*.Rproj
+.Rhistory
+rsconnect-python
+rsconnect-python/*
+*.pyc
+*.cpython-39.pyc
+/pyvenv.cfg
+.DS_Store
+
+

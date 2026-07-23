@@ -1,0 +1,11 @@
+.calopy-column{
+    display: flex;
+    flex-direction: column;
+}
+
+.calopy-row{
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 15px;
+}

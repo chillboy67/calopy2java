@@ -1,0 +1,34 @@
+# IDE
+.idea/
+*.iml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Java / Maven
+target/
+out/
+*.class
+*.jar
+*.war
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+
+# R
+.Rproj.user
+*.Rproj
+.Rhistory
+rsconnect-python/
+
+# Kotlin
+.kotlin/
