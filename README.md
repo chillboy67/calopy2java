@@ -1,5 +1,7 @@
 # calopy2java
 
+**English** | [中文](./README.cn.md)
+
 A Java 17 port of the signal-processing core of [Calopy](https://calopy.app/), an indirect calorimetry analysis framework. The Python implementation is treated as the reference; the goal of the port is numerical agreement with it, verified column-by-column against committed reference output.
 
 ---
