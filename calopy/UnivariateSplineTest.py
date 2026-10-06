@@ -4,7 +4,8 @@ import os
 import sys
 
 # 1. 设置路径
-sys.path.append(os.path.join(os.getcwd(), "src"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(HERE, "src"))
 
 try:
     from calopy.maths.filter.UnivariateSplineFilter import UnivariateSpline
@@ -17,7 +18,7 @@ except ImportError as e:
 
 
 def generate_spline_truth():
-    file_path = r"D:\calopy2java\example_csv.csv"
+    file_path = os.path.join(HERE, "..", "example_csv.csv")
     if not os.path.exists(file_path):
         print(f"Error: 文件未找到: {file_path}")
         return
@@ -45,7 +46,7 @@ def generate_spline_truth():
     results['Spline_Fixed_Python'] = res_spline[target_col]
     results['Spline_Auto_Python'] = res_autofit[target_col]
 
-    output_file = "python_spline_result.csv"
+    output_file = os.path.join(HERE, "python_spline_result.csv")
     results.to_csv(output_file, index=False)
     print(f"\nSuccess! Spline results saved to: {os.path.abspath(output_file)}")
 

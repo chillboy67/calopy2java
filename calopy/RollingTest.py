@@ -3,7 +3,8 @@ import numpy as np
 import os
 import sys
 
-sys.path.append(os.path.join(os.getcwd(), "src"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(HERE, "src"))
 
 try:
     from calopy.maths.filter.RollingWindowMeanFilter import RollingWindowMeanFilter
@@ -17,7 +18,7 @@ except ImportError as e:
 
 
 def generate_rolling_truth():
-    file_path = r"D:\calopy2java\example_csv.csv"
+    file_path = os.path.join(HERE, "..", "example_csv.csv")
     if not os.path.exists(file_path):
         print(f"Error: 文件未找到: {file_path}")
         return
@@ -51,7 +52,7 @@ def generate_rolling_truth():
     results['Triangular_Python'] = res_tri[target_col]
     results['Gaussian_Python'] = res_gauss[target_col]
 
-    output_file = "python_rolling_result.csv"
+    output_file = os.path.join(HERE, "python_rolling_result.csv")
     results.to_csv(output_file, index=False)
     print(f"\nSuccess! All 3 Rolling results saved to: {os.path.abspath(output_file)}")
 

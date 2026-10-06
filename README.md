@@ -2,99 +2,73 @@
 
 **English** | [中文](./README.cn.md)
 
-A Java 17 port of the signal-processing core of [Calopy](https://calopy.app/), an indirect calorimetry analysis framework. The Python implementation is treated as the reference; the goal of the port is numerical agreement with it, verified column-by-column against committed reference output.
+A Java 17 port of the **smoothing filters** of [Calopy](https://calopy.app/), an indirect calorimetry analysis framework. The Python implementation is the reference, and JUnit tests compare the Java output with it point by point.
+
+The port covers the 9 methods on Calopy's smoothing page (`calopy/src/calopy/maths/filter`). Data loading, condition grouping, statistics, RMR, energy balance and the UI are not ported.
 
 ---
 
 ## Project Highlights
 
-- **10 filters** ported from Python/NumPy/SciPy to Java 17 (Maven), each cross-validated against the Python implementation on the same 5,256-point input
-- **Smoothing rewrite**: the spline smoother was reimplemented as a Whittaker-Eilers penalized least-squares smoother, cutting its disagreement with the Python reference from MAE 9.82 to 0.027 — a 99.7% reduction, roughly 1/365 of the original deviation
-- **Banded pentadiagonal solver** written from scratch, so each smoothing solve is O(n) instead of O(n³) dense inversion
-- **Automatic λ selection** by binary search, reproducing SciPy's `s` (target-SSE) parameterization rather than requiring a hand-tuned λ
-- Reference Python/Shiny app vendored in-tree so both implementations can be run on the same input
+- **8 smoothing algorithms plus a pass-through filter**, all matching the Python reference on the same 5,256-point input. The rolling-window filters and the splines are **bit-identical**; the remaining algorithms agree to about 1e-13.
+- **FITPACK port**: the Dierckx FITPACK routines behind `scipy.interpolate.UnivariateSpline` (`fpcurf`, `fpknot`, `fpdisc`, `fpbspl`, `fpback`, `fprati`, `splev`) are ported line by line. Knot placement, the smoothing-parameter iteration and scipy's `nest` resizing all follow the original.
+- **pygam GAM port**: reproduces the `pygam.GAM()` defaults (20 cubic B-splines, second-difference penalty with λ = 0.6, intercept).
+- **pandas / scipy edge behaviour matched**: even windows, missing values, the Savitzky–Golay `interp` edges, and the Gaussian standard deviation being truncated to an integer.
+- **JUnit 5 tests** read `calopy/python_*.csv` directly and assert on them, using relative paths.
 
 ---
 
-## Technical Implementation
+## Filters
 
-### The Problem
+| Filter | Python counterpart | Notes |
+|--------|-------------------|-------|
+| `RollingWindowMeanFilter` | `series.rolling(w, center=True, min_periods=1).mean()` | Even windows supported; missing values skipped |
+| `RollingWindowTriangularFilter` | `win_type="triang"` | Weights from `scipy.signal.windows.triang` |
+| `RollingWindowGaussianFilter` | `win_type="gaussian"`, `std=int(deviation)` | Standard deviation truncated to an integer, as in Python |
+| `SavgolFilter` | `scipy.signal.savgol_filter(y, w, order)` | Default `mode='interp'`: polynomial fit at both ends; even windows supported |
+| `SingleComponentCosinorFilter` | `CosinorPy.cosinor1.fit_cosinor` | Joint least squares `y ~ 1 + cos + sin`, curve rebuilt from mesor, amplitude and acrophase |
+| `GeneralizedAdditiveFilter` | `pygam.GAM()` | P-spline: 20 cubic B-splines + second-difference penalty |
+| `UnivariateSplineFilter` | `UnivariateSpline(x, y, s)` | FITPACK port (`com.calopy.maths.spline`) |
+| `UnivariateSplineAutofitFilter` | `UnivarateSplineAutofitFilter` | Grid search over `np.arange(0.02, 6, 0.1)`, picks `s` by penalized sum of squares |
+| `DoNothingOnSeriesFilter` | `DoNothingOnSeriesFilter` | Pass-through |
 
-The first pass of the port produced a spline smoother whose output diverged badly from `scipy.interpolate.UnivariateSpline`: **MAE 9.82** against the Python reference on the `VO2(3)` column, with a Pearson correlation of only **0.787**. On a signal in this range that is not a rounding discrepancy — the two implementations were tracing visibly different curves.
-
-### The Fix: Whittaker-Eilers Smoothing
-
-`CubicSmoothingSpline` replaces knot-based spline fitting with a Whittaker-Eilers smoother, which solves
-
-```
-(I + λ · D₂ᵀD₂) z = y
-```
-
-for the smoothed series `z`, where `D₂` is the second-difference operator. The implementation consists of:
-
-- A **banded representation** of `I + λ·D₂ᵀD₂`, which is symmetric pentadiagonal (bandwidth 2, not tridiagonal — the second-difference penalty couples each point to its two neighbors on each side)
-- A **symmetric pentadiagonal solver** (`solveSymmetricPentadiagonal`) doing banded LU elimination in O(n), avoiding dense inversion
-- A **binary search over log₁₀λ ∈ [−15, 15]**, up to 40 iterations with early exit at 5% relative tolerance, targeting a given SSE. This reproduces SciPy's `s` parameter, which constrains the residual sum of squares rather than λ directly.
-
-`UnivariateSplineAutofitFilter` layers the Python autofit sweep on top: a grid search over `s ∈ [0.02, 6.0]` in steps of 0.1, selecting the `s` that minimizes a penalized sum of squares (`SSE + θ·roughness`, θ = 1400).
-
-A global roughness penalty rather than piecewise segment fitting is what accounts for the accuracy difference; knot placement in the original approach was following local noise.
-
-### Cost
-
-Each solve is O(n) and numerically stable across the λ range searched. The autofit path is not cheap in absolute terms — 60 grid points × up to 40 binary-search iterations means up to ~2,400 solves per series. The O(n) scaling is what makes that tractable at n ≈ 5,000.
-
----
-
-## Filters Implemented
-
-| Filter | Algorithm |
-|--------|-----------|
-| `CubicSmoothingSpline` | Whittaker-Eilers penalized least squares; banded solver + λ binary search |
-| `UnivariateSplineFilter` | Fixed-`s` smoothing spline |
-| `UnivariateSplineAutofitFilter` | Grid search over `s`, selected by penalized sum of squares |
-| `SavgolFilter` | Savitzky-Golay polynomial smoothing |
-| `SingleComponentCosinorFilter` | Cosinor rhythmometry (least squares) |
-| `GeneralizedAdditiveFilter` | LOESS local regression (see caveat below) |
-| `RollingWindowMeanFilter` | Rolling mean |
-| `RollingWindowTriangularFilter` | Triangular-weighted rolling window |
-| `RollingWindowGaussianFilter` | Gaussian-weighted rolling window |
-| `DoNothingOnSeriesFilter` | Pass-through (baseline) |
+Missing values are `null` (pandas NaN) and are handled the same way as in Python:
+- **Rolling windows** skip them, and output a missing value when a window has no valid value.
+- **Savitzky–Golay** spreads them to every window that contains them.
+- **Cosinor** leaves them out of the fit but still produces a value at every position.
+- **GAM** fits on the remaining values and keeps the missing positions missing.
+- **Splines**: scipy returns all-NaN when the input has a NaN, so the Java version returns an all-missing result too. It **never** treats a missing value as 0.
 
 ---
 
 ## Cross-Validation Against the Python Reference
 
-All figures below are Java output vs. Python output on the same input (`example_csv.csv`, column `VO2(3)`, 5,256 points). MAE is the mean absolute difference between the two implementations' smoothed series; `r` is the Pearson correlation between them.
+Input is `example_csv.csv`, column `VO2(3)` (5,256 points), with the same parameters the scripts in `calopy/*.py` used to produce the reference output. The table shows the mean and maximum absolute difference between the Java and Python output.
 
-| Filter | MAE vs. Python | r |
-|--------|---------------|---|
-| Rolling mean | 0.00000 | 1.00000 |
-| Rolling triangular | 0.00000 | 1.00000 |
-| Rolling Gaussian | 0.00000 | 1.00000 |
-| Savitzky-Golay | 0.00071 | 1.00000 |
-| Spline (autofit) | 0.02692 | 1.00000 |
-| Spline (fixed, s=10) | 0.03524 | 1.00000 |
-| Cosinor | 0.98969 | 0.99144 |
-| GAM / LOESS | 2.51335 | 0.87656 |
+| Filter | MAE before fix | MAE after fix | Max diff after fix |
+|--------|---------------|---------------|--------------------|
+| Rolling mean (w=5) | 0 | 0 | 0 |
+| Rolling triangular (w=5) | 0 | 0 | 0 |
+| Rolling Gaussian (w=5, std=1) | 0 | 0 | 0 |
+| Savitzky–Golay (w=9, order=3) | 0.00071 | 9.9e-14 | 2.3e-13 |
+| Cosinor (period 144) | 0.98969 | 3.7e-14 | 1.7e-13 |
+| GAM | 2.51335 | 8.9e-14 | 3.0e-13 |
+| Spline (fixed, s=10) | 0.03524 | 0 | 0 |
+| Spline (autofit) | 0.02692 | 0 | 0 |
 
-The rolling-window filters are bit-exact. Savitzky-Golay and both spline paths agree to well within the measurement resolution of the underlying signal.
+`calopy/python_extended_result.csv` (generated by `calopy/generate_extended_reference.py`) adds cases the original comparison did not cover. All of them pass in the tests with a tolerance of 1e-9:
+- **The RER column**: values around 0.9, where the spline at s=1 actually smooths.
+- **Even windows**: Calopy's UI allows windows down to 2.
+- **Larger `s` on VO2**: 100 and 500,000.
+- **Input with missing values.**
 
-**Two known gaps**, stated plainly because the table above would otherwise be read as uniform success:
+### History of the spline port
 
-- **Cosinor** (MAE 0.99) differs in least-squares conditioning; the fitted rhythm parameters are close but not identical.
-- **GAM** (MAE 2.51, r 0.877) is *not* a port. `GeneralizedAdditiveFilter` implements LOESS local regression, whereas the Python side uses a spline-basis GAM. These are different estimators and the numbers reflect that. It is usable as a smoother but should not be treated as reproducing the Python GAM.
+1. **The first version** was a knot-based approximation, with an MAE of 9.82 against Python (output kept in `java_spline_result_old.csv`).
+2. **The second version** switched to Whittaker–Eilers discrete smoothing and brought the MAE on `VO2(3)` at s=10 down to 0.027.
 
-### Effect of the smoothing rewrite
-
-`java_spline_result_old.csv` is retained so the change is auditable:
-
-| Column | Before | After |
-|--------|--------|-------|
-| Spline autofit — MAE vs. Python | 9.8189 | 0.0269 |
-| Spline autofit — r vs. Python | 0.78699 | 1.00000 |
-| Spline fixed — MAE vs. Python | 7.6583 | 0.0352 |
-| Spline fixed — r vs. Python | 0.86981 | 1.00000 |
+   At that setting, however, scipy's spline barely smooths: the Python output differs from the raw data by only MAE 0.019, so returning the raw data unchanged was closer to Python than the second version was. The number therefore did not show agreement. On the RER column at s=1, where the spline really smooths, the second version differed from Python by 43% of the smoothing amount.
+3. **The current version** is a line-by-line FITPACK port and is bit-identical to scipy on every test case.
 
 ### Reproducing these numbers
 
@@ -104,11 +78,8 @@ import csv
 def compare(py_file, py_col, java_file, java_col):
     p = [float(r[py_col]) for r in csv.DictReader(open(py_file))]
     j = [float(r[java_col]) for r in csv.DictReader(open(java_file))]
-    mae = sum(abs(a - b) for a, b in zip(p, j)) / len(p)
-    mp, mj = sum(p) / len(p), sum(j) / len(j)
-    num = sum((a - mp) * (b - mj) for a, b in zip(p, j))
-    den = (sum((a - mp) ** 2 for a in p) * sum((b - mj) ** 2 for b in j)) ** 0.5
-    print(f"MAE={mae:.5f}  r={num / den:.5f}")
+    diffs = [abs(a - b) for a, b in zip(p, j)]
+    print(f"MAE={sum(diffs) / len(diffs):.3g}  max={max(diffs):.3g}")
 
 compare("calopy/python_spline_result.csv", "Spline_Auto_Python",
         "java_spline_result.csv", "Spline_Auto_Java")
@@ -118,14 +89,12 @@ compare("calopy/python_spline_result.csv", "Spline_Auto_Python",
 
 ## Why Smoothing Error Matters Downstream
 
-Indirect calorimetry produces continuous VO₂ and VCO₂ time series. The quantities actually consumed are derived from them: RER is a ratio (VCO₂/VO₂), and energy expenditure is a linear combination of the two. Both propagate smoothing error rather than average it out.
+Indirect calorimetry produces continuous VO₂ and VCO₂ time series. The quantities actually used are mostly derived from them: RER is a ratio (VCO₂/VO₂), and energy expenditure is a linear combination of the two. Both pass smoothing error on rather than averaging it out.
 
-Two properties of the error matter more than its magnitude:
+- **The error is systematic.** Neighbouring samples are biased in the same direction, so the error does not cancel when integrated over a time window or aggregated across subjects.
+- **Ratios amplify it where the denominator is small.** The same absolute error in VO₂ gives a relative error in RER proportional to 1/VO₂. Low-VO₂ (resting) intervals are hit hardest, and those are often the intervals of interest.
 
-- **It is systematic, not random.** Knot placement biases the fitted curve in the same direction across neighboring samples, so the error does not cancel when the signal is integrated over a time window or aggregated across subjects.
-- **Ratios amplify it near small denominators.** A fixed absolute error in VO₂ produces a relative error in RER scaling as 1/VO₂, so low-VO₂ intervals — resting periods — carry the largest distortion, and those are often the intervals of interest.
-
-This is why the port is validated against reference output rather than against the raw input. Agreement with the raw signal is not a correctness metric for a smoother: a filter that interpolates the noise scores an MAE near zero while doing no smoothing at all. Divergence from a known-good implementation is the property worth measuring.
+This is why the port is checked against the reference implementation's output rather than against the raw input. Being close to the raw data says nothing about a smoother's correctness: a filter that does nothing has an MAE of 0 against the raw data.
 
 ---
 
@@ -133,12 +102,18 @@ This is why the port is validated against reference output rather than against t
 
 ```
 calopy2java/
-├── calopy/                  # Reference Python/Shiny app (MIT, upstream: computational-discovery-research/calopy)
-│   └── python_*_result.csv  # Python reference output, used as the comparison baseline
-├── calojava/                # Java 17 / Maven port of the signal processing filters
-├── example_csv.csv          # Shared input: 5,256-point physiological time series
-├── java_*_result.csv        # Java output, compared column-wise against the Python reference
-└── java_*_result_old.csv    # Pre-rewrite output, retained for the before/after comparison
+├── calopy/                           # Reference Python/Shiny app (MIT, upstream: computational-discovery-research/calopy)
+│   ├── python_*_result.csv           # Python reference output
+│   ├── python_extended_result.csv    # Python reference output for the extended cases
+│   └── *.py                          # Scripts that generate the reference output
+├── calojava/                         # Java 17 / Maven port
+│   ├── src/main/java/com/calopy/maths/filter   # Filters
+│   ├── src/main/java/com/calopy/maths/spline   # FITPACK port
+│   ├── src/main/java/com/calopy/maths/gam      # pygam GAM port
+│   └── src/test/java                            # JUnit tests
+├── example_csv.csv                   # Shared input: 5,256-point physiological time series
+├── java_*_result.csv                 # Java output, compared column-wise against the Python reference
+└── java_*_result_old.csv             # Output of an earlier version, kept for the before/after comparison
 ```
 
 ---
@@ -152,14 +127,24 @@ cd ./calopy/src
 shiny run --reload --port 8180 --launch-browser ./app.py
 ```
 
+Regenerate the reference output (can be run from any directory):
+```bash
+python calopy/generate_extended_reference.py
+```
+
 **Java (calojava):**
 ```bash
 cd calojava
-mvn clean package
-mvn test
+mvn test            # 17 tests, about 15 seconds
+mvn test -Pslow     # also runs the spline autofit comparison on VO2, about 2 minutes
 ```
 
-> Note: the test harnesses under `calojava/src/test` currently hardcode absolute Windows paths for their input and output CSVs. Adjust those paths before running them on another machine.
+Regenerate the `java_*_result.csv` files in the repository root:
+```bash
+cd calojava
+mvn test-compile dependency:build-classpath -Dmdep.outputFile=cp.txt
+java -cp "target/classes:target/test-classes:$(cat cp.txt)" com.calopy.maths.filter.ExportJavaResults
+```
 
 ---
 

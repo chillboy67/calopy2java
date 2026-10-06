@@ -15,6 +15,9 @@
 
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
+
+        <!-- 默认跳过耗时的用例（VO2 上的样条 autofit 约需数分钟）；mvn test -Pslow 可以一起跑 -->
+        <excludedTestGroups>slow</excludedTestGroups>
     </properties>
 
     <dependencies>
@@ -22,6 +25,12 @@
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-math3</artifactId>
             <version>3.6.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.2</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 
@@ -37,6 +46,23 @@
                     <encoding>UTF-8</encoding>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+                <configuration>
+                    <excludedGroups>${excludedTestGroups}</excludedGroups>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>slow</id>
+            <properties>
+                <excludedTestGroups>none</excludedTestGroups>
+            </properties>
+        </profile>
+    </profiles>
 </project>

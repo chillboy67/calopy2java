@@ -1,84 +1,109 @@
 package com.calopy.maths.filter;
 
+import com.calopy.maths.spline.UnivariateSpline;
+
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * 对应 Calopy 的 UnivarateSplineAutofitFilter：在 s = np.arange(0.02, 6, 0.1) 上做网格搜索，
+ * 取惩罚平方和 PSS = 残差 + θ·Σ spline''(x)² 最小的 s（θ = 1400），再用该 s 拟合。
+ */
 public class UnivariateSplineAutofitFilter implements CurveFittingFilter {
 
     public static final String TYPE = "Univariate spline - autofit";
 
-    // 完全复刻 Python 的参数搜索范围
-    // Python: s_start=0.02, s_end=6, s_step=0.1
-    private final double sStart = 0.02;
-    private final double sEnd = 6.0;
-    private final double sStep = 0.1;
-    private final double theta = 1400.0;
-
-    private final CubicSmoothingSpline splineSolver = new CubicSmoothingSpline();
+    private static final double S_START = 0.02;
+    private static final double S_END = 6.0;
+    private static final double S_STEP = 0.1;
+    private static final double THETA = 1400.0;
 
     @Override
     public List<Double> apply(List<Double> data) {
-        // System.out.println("univariateSplineautofit");
-        if (data == null || data.size() < 3) return new ArrayList<>(data);
-
-        int n = data.size();
-        double[] y = new double[n];
-        for (int i = 0; i < n; i++) {
-            Double v = data.get(i);
-            y[i] = (v != null) ? v : 0.0;
+        double[] y = SeriesValues.toArrayOrNull(data);
+        if (y == null) {
+            return SeriesValues.allMissing(data.size());
         }
-
-        // 1. Grid Search Over S (Target SSE)
-        // 这次我们搜索的是 SSE 目标，而不是 lambda
-        double bestS = findBestS(y);
-        System.out.println("Auto-fit found best s (Target SSE): " + bestS);
-
-        // 2. 使用最佳 s 计算最终结果
-        double[] smoothedArr = splineSolver.fitForTargetError(y, bestS);
-
-        List<Double> result = new ArrayList<>(n);
-        for (double v : smoothedArr) {
+        double[] x = SeriesValues.positions(y.length);
+        double[] smoothed = new UnivariateSpline(x, y, findBestS(x, y)).evaluate(x);
+        List<Double> result = new ArrayList<>(smoothed.length);
+        for (double v : smoothed) {
             result.add(v);
         }
         return result;
     }
 
-    private double findBestS(double[] y) {
-        double bestS = sStart;
-        double minPSS = Double.MAX_VALUE;
-
-        // 遍历 Python 定义的 s 范围 (0.02 -> 6.0)
-        for (double s = sStart; s <= sEnd; s += sStep) {
-
-            // 关键：对于每一个 s，寻找对应的 fit
-            // 如果 s=0.02，这会迫使 Solver 找到极小的 lambda，产生极高精度的拟合
-            double[] fitted = splineSolver.fitForTargetError(y, s);
-
-            double pss = computePSS(y, fitted);
-
-            if (pss < minPSS) {
-                minPSS = pss;
-                bestS = s;
+    /** grid_find_smoothing_par 的移植，返回已按 round(par, 2) 处理过的 s。 */
+    double findBestS(double[] x, double[] y) {
+        double[] candidates = arange(S_START, S_END, S_STEP);
+        double[] pss = new double[candidates.length];
+        int count = 0;
+        for (int par = 0; par < candidates.length; par++) {
+            pss[par] = penalizedSumOfSquares(x, y, candidates[par]);
+            count++;
+            // Python 的提前停止：当前这一项之前的连续 3 个 PSS 完全相同
+            if (par > 3 && pss[par - 3] == pss[par - 2] && pss[par - 2] == pss[par - 1]) {
+                break;
             }
         }
-        return bestS;
+        int best = 0;
+        for (int i = 1; i < count; i++) {
+            if (pss[i] < pss[best]) {
+                best = i;
+            }
+        }
+        return Math.rint(candidates[best] * 100.0) / 100.0;
     }
 
-    private double computePSS(double[] original, double[] fitted) {
-        double sse = 0.0;
-        int n = original.length;
-        for (int i = 0; i < n; i++) {
-            double diff = original[i] - fitted[i];
-            sse += diff * diff;
+    private static double penalizedSumOfSquares(double[] x, double[] y, double s) {
+        UnivariateSpline spl = new UnivariateSpline(x, y, s);
+        double[] d2 = spl.derivative(2).evaluate(x);
+        for (int i = 0; i < d2.length; i++) {
+            d2[i] = d2[i] * d2[i];
         }
+        return spl.getResidual() + THETA * pairwiseSum(d2, 0, d2.length);
+    }
 
-        double roughness = 0.0;
-        for (int i = 1; i < n - 1; i++) {
-            double d2 = fitted[i+1] - 2 * fitted[i] + fitted[i-1];
-            roughness += d2 * d2;
+    /** numpy.arange 的取值方式：第 i 个值为 start + i * ((start + step) - start)。 */
+    private static double[] arange(double start, double stop, double step) {
+        int len = (int) Math.ceil((stop - start) / step);
+        double[] v = new double[len];
+        double delta = (start + step) - start;
+        for (int i = 0; i < len; i++) {
+            v[i] = i == 1 ? start + step : start + i * delta;
         }
+        return v;
+    }
 
-        return sse + theta * roughness;
+    /** numpy.sum 对连续 float64 数组使用的成对求和。 */
+    private static double pairwiseSum(double[] a, int from, int n) {
+        if (n < 8) {
+            double res = 0.0;
+            for (int i = 0; i < n; i++) {
+                res += a[from + i];
+            }
+            return res;
+        } else if (n <= 128) {
+            double[] r = new double[8];
+            for (int j = 0; j < 8; j++) {
+                r[j] = a[from + j];
+            }
+            int i;
+            for (i = 8; i < n - (n % 8); i += 8) {
+                for (int j = 0; j < 8; j++) {
+                    r[j] += a[from + i + j];
+                }
+            }
+            double res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
+            for (; i < n; i++) {
+                res += a[from + i];
+            }
+            return res;
+        } else {
+            int n2 = n / 2;
+            n2 -= n2 % 8;
+            return pairwiseSum(a, from, n2) + pairwiseSum(a, from + n2, n - n2);
+        }
     }
 
     @Override

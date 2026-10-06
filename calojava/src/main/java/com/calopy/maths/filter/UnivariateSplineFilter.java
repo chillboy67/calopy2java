@@ -1,42 +1,34 @@
 package com.calopy.maths.filter;
 
+import com.calopy.maths.spline.UnivariateSpline;
+
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * 对应 Calopy 的 UnivariateSplineFilter：scipy.interpolate.UnivariateSpline(range(n), y, s=smoothingFactor)。
+ */
 public class UnivariateSplineFilter implements CurveFittingFilter {
 
     public static final String TYPE = "Univariate spline";
 
-    private final double smoothingFactor; // 这对应 Python 的 s (SSE 目标)
-    private final CubicSmoothingSpline splineSolver;
+    private final double smoothingFactor;
 
     public UnivariateSplineFilter(double smoothingFactor) {
         this.smoothingFactor = smoothingFactor;
-        this.splineSolver = new CubicSmoothingSpline();
     }
 
     @Override
     public List<Double> apply(List<Double> data) {
-        System.out.println("UnivariateSpline with target SSE (s): " + smoothingFactor);
-
-        if (data == null || data.size() < 3) {
-            return data == null ? new ArrayList<>() : new ArrayList<>(data);
+        double[] y = SeriesValues.toArrayOrNull(data);
+        if (y == null) {
+            // scipy 遇到缺失值时整条结果都是 NaN，这里同样整条返回缺失
+            return SeriesValues.allMissing(data.size());
         }
-
-        int n = data.size();
-        double[] y = new double[n];
-        for (int i = 0; i < n; i++) {
-            Double val = data.get(i);
-            y[i] = (val != null) ? val : 0.0;
-        }
-
-        // [关键修改] 使用 Target Error 模式
-        // Python s=10.0 意味着 SSE <= 10.0
-        // 我们自动寻找 lambda 使得 SSE ≈ 10.0
-        double[] smoothedArr = splineSolver.fitForTargetError(y, smoothingFactor);
-
-        List<Double> result = new ArrayList<>(n);
-        for (double v : smoothedArr) {
+        double[] x = SeriesValues.positions(y.length);
+        double[] smoothed = new UnivariateSpline(x, y, smoothingFactor).evaluate(x);
+        List<Double> result = new ArrayList<>(smoothed.length);
+        for (double v : smoothed) {
             result.add(v);
         }
         return result;
@@ -44,6 +36,6 @@ public class UnivariateSplineFilter implements CurveFittingFilter {
 
     @Override
     public String getParameterText() {
-        return "smoothingFactor (s):" + smoothingFactor;
+        return "smoothingfactor:" + smoothingFactor;
     }
 }

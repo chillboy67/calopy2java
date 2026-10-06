@@ -4,7 +4,8 @@ import os
 import sys
 
 # 1. 引用源码路径
-sys.path.append(os.path.join(os.getcwd(), "src"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(HERE, "src"))
 
 try:
     from calopy.maths.filter.SingleComponentCosinorFilter import SingleComponentCosinorFilter
@@ -16,7 +17,7 @@ except ImportError as e:
 
 
 def generate_cosinor_truth():
-    file_path = r"D:\calopy2java\example_csv.csv"
+    file_path = os.path.join(HERE, "..", "example_csv.csv")
     if not os.path.exists(file_path):
         print(f"Error: 文件未找到: {file_path}")
         return
@@ -40,7 +41,7 @@ def generate_cosinor_truth():
     results['Raw_Data'] = df[target_col]
     results['Cosinor_Python'] = res_cosinor[target_col]
 
-    output_file = "python_cosinor_result.csv"
+    output_file = os.path.join(HERE, "python_cosinor_result.csv")
     results.to_csv(output_file, index=False)
     print(f"\nSuccess! Cosinor results saved to: {os.path.abspath(output_file)}")
 

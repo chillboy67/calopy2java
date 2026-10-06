@@ -2,99 +2,73 @@
 
 [English](./README.md) | **中文**
 
-[Calopy](https://calopy.app/) 间接测热分析框架信号分析核心的 **Java 17 移植**。以 Python 实现为参考基准，目标是在数值上与之对齐，并按列对照已提交的参考输出进行校验。
+[Calopy](https://calopy.app/) 间接测热分析框架中**平滑滤波模块**的 Java 17 移植。以 Python 实现为参考基准，用 JUnit 测试逐点对照 Python 的输出。
+
+移植范围只包括 Calopy 平滑页面里的 9 种方法（`calopy/src/calopy/maths/filter`）。数据加载、条件分组、统计、RMR、能量平衡和界面都没有移植。
 
 ---
 
 ## 项目要点
 
-- **10 种滤波器** 从 Python / NumPy / SciPy 移植到 Java 17（Maven），均在同一组 5,256 点输入上与 Python 实现交叉验证
-- **平滑算法重写**：样条平滑改为 Whittaker–Eilers 惩罚最小二乘平滑，与 Python 参考的偏差由 MAE 9.82 降至 0.027，降幅约 99.7%（约为原先偏差的 1/365）
-- **带状五对角求解器** 自行实现，单次平滑求解复杂度为 O(n)，避免 O(n³) 稠密矩阵求逆
-- **λ 自动选取**：通过二分搜索逼近 SciPy 的 `s`（目标 SSE）参数化方式，无需手工调 λ
-- 仓库内附带原版 Python / Shiny 应用，便于在相同输入上对照运行
-
----
-
-## 技术实现
-
-### 问题
-
-移植第一版的样条平滑与 `scipy.interpolate.UnivariateSpline` 偏差很大：在 `VO2(3)` 列上相对 Python 参考的 **MAE 为 9.82**，Pearson 相关仅 **0.787**。对这一量级的信号而言，已不是舍入误差——两条曲线形状明显不同。
-
-### 方案：Whittaker–Eilers 平滑
-
-`CubicSmoothingSpline` 用 Whittaker–Eilers 平滑替代基于节点的样条拟合，求解：
-
-```
-(I + λ · D₂ᵀD₂) z = y
-```
-
-其中 `z` 为平滑后序列，`D₂` 为二阶差分算子。实现包括：
-
-- **`I + λ·D₂ᵀD₂` 的带状表示**：对称五对角（带宽为 2，非三对角——二阶差分惩罚使每个点与两侧各两个邻居耦合）
-- **对称五对角求解器**（`solveSymmetricPentadiagonal`）：带状 LU 消元，复杂度 O(n)
-- **对 log₁₀λ ∈ [−15, 15] 的二分搜索**：最多 40 次迭代，相对容差 5% 时提前退出，以给定 SSE 为目标。对应 SciPy 的 `s` 参数（约束残差平方和，而非直接给 λ）
-
-`UnivariateSplineAutofitFilter` 在其上叠加 Python 侧的 autofit：在 `s ∈ [0.02, 6.0]` 上以 0.1 为步长网格搜索，按惩罚平方和（`SSE + θ·roughness`，θ = 1400）选取最优 `s`。
-
-精度提升主要来自全局粗糙度惩罚，而非分段局部拟合；原先节点放置容易跟着局部噪声走。
-
-### 计算代价
-
-单次求解为 O(n)，在搜索的 λ 范围内数值稳定。autofit 路径绝对开销不小：60 个网格点 × 最多 40 次二分，每条序列最多约 2,400 次求解。在 n ≈ 5,000 时，O(n) 复杂度使这一路径仍可接受。
+- **8 种平滑算法加 1 个直通滤波器**，在同一份 5,256 点输入上与 Python 参考的结果一致：滚动窗口和样条**逐位相同**，其余算法的差值在 1e-13 量级。
+- **FITPACK 移植**：`scipy.interpolate.UnivariateSpline` 背后的 Dierckx FITPACK 子程序（`fpcurf`、`fpknot`、`fpdisc`、`fpbspl`、`fpback`、`fprati`、`splev`）逐行移植到 Java。节点选择、平滑参数迭代和 scipy 的 nest 扩容流程都和原版相同。
+- **pygam GAM 移植**：按 `pygam.GAM()` 默认设置实现：20 个三次 B 样条、二阶差分惩罚（λ = 0.6）、截距项。
+- **与 pandas / scipy 的细节行为对齐**：偶数窗口、缺失值、Savitzky–Golay 的 `interp` 边界、高斯标准差截断为整数等。
+- **JUnit 5 测试**直接读取 `calopy/python_*.csv` 做断言，使用相对路径。
 
 ---
 
 ## 已实现的滤波器
 
-| 滤波器 | 算法 |
-|--------|------|
-| `CubicSmoothingSpline` | Whittaker–Eilers 惩罚最小二乘；带状求解 + λ 二分 |
-| `UnivariateSplineFilter` | 固定 `s` 的平滑样条 |
-| `UnivariateSplineAutofitFilter` | 对 `s` 网格搜索，按惩罚平方和选取 |
-| `SavgolFilter` | Savitzky–Golay 多项式平滑 |
-| `SingleComponentCosinorFilter` | Cosinor 节律分析（最小二乘） |
-| `GeneralizedAdditiveFilter` | LOESS 局部回归（见下方说明） |
-| `RollingWindowMeanFilter` | 滚动均值 |
-| `RollingWindowTriangularFilter` | 三角加权滚动窗口 |
-| `RollingWindowGaussianFilter` | 高斯加权滚动窗口 |
-| `DoNothingOnSeriesFilter` | 直通（基线） |
+| 滤波器 | 对应的 Python 实现 | 说明 |
+|--------|-------------------|------|
+| `RollingWindowMeanFilter` | `series.rolling(w, center=True, min_periods=1).mean()` | 支持偶数窗口，跳过缺失值 |
+| `RollingWindowTriangularFilter` | `win_type="triang"` | 权重同 `scipy.signal.windows.triang` |
+| `RollingWindowGaussianFilter` | `win_type="gaussian"`, `std=int(deviation)` | 标准差与 Python 一样截断为整数 |
+| `SavgolFilter` | `scipy.signal.savgol_filter(y, w, order)` | 默认 `mode='interp'`：首尾用多项式拟合；支持偶数窗口 |
+| `SingleComponentCosinorFilter` | `CosinorPy.cosinor1.fit_cosinor` | 联合最小二乘 `y ~ 1 + cos + sin`，再由 mesor、振幅、相位重建曲线 |
+| `GeneralizedAdditiveFilter` | `pygam.GAM()` | P 样条：20 个三次 B 样条 + 二阶差分惩罚 |
+| `UnivariateSplineFilter` | `UnivariateSpline(x, y, s)` | FITPACK 移植（`com.calopy.maths.spline`） |
+| `UnivariateSplineAutofitFilter` | `UnivarateSplineAutofitFilter` | 在 `np.arange(0.02, 6, 0.1)` 上网格搜索，按 PSS 选 `s` |
+| `DoNothingOnSeriesFilter` | `DoNothingOnSeriesFilter` | 原样返回 |
+
+缺失值统一用 `null` 表示，对应 pandas 的 NaN，处理方式与 Python 相同：
+- 滚动窗口：跳过缺失值，窗口内没有有效值时输出缺失。
+- Savitzky–Golay：缺失值会扩散到包含它的窗口。
+- Cosinor：缺失行不参与拟合，但每个位置都会得到拟合值。
+- GAM：去掉缺失值后拟合，缺失位置保持缺失。
+- 样条：scipy 遇到缺失值时整条结果都是 NaN，Java 版同样整条返回缺失，**不会**把缺失当成 0。
 
 ---
 
 ## 相对 Python 参考的交叉验证
 
-下表均为 **Java 输出 vs Python 输出**，同一输入（`example_csv.csv`，列 `VO2(3)`，5,256 点）。MAE 为两条平滑序列的平均绝对差；`r` 为 Pearson 相关系数。
+输入为 `example_csv.csv` 的 `VO2(3)` 列（5,256 点），参数和 `calopy/*.py` 中生成参考结果时一致。表中是 Java 与 Python 输出的平均绝对差（MAE）和最大绝对差。
 
-| 滤波器 | 相对 Python 的 MAE | r |
-|--------|-------------------|---|
-| 滚动均值 | 0.00000 | 1.00000 |
-| 滚动三角 | 0.00000 | 1.00000 |
-| 滚动高斯 | 0.00000 | 1.00000 |
-| Savitzky–Golay | 0.00071 | 1.00000 |
-| 样条（autofit） | 0.02692 | 1.00000 |
-| 样条（固定，s=10） | 0.03524 | 1.00000 |
-| Cosinor | 0.98969 | 0.99144 |
-| GAM / LOESS | 2.51335 | 0.87656 |
+| 滤波器 | 修复前 MAE | 修复后 MAE | 修复后最大差 |
+|--------|-----------|-----------|-------------|
+| 滚动均值（w=5） | 0 | 0 | 0 |
+| 滚动三角（w=5） | 0 | 0 | 0 |
+| 滚动高斯（w=5, std=1） | 0 | 0 | 0 |
+| Savitzky–Golay（w=9, order=3） | 0.00071 | 9.9e-14 | 2.3e-13 |
+| Cosinor（周期 144） | 0.98969 | 3.7e-14 | 1.7e-13 |
+| GAM | 2.51335 | 8.9e-14 | 3.0e-13 |
+| 样条（固定，s=10） | 0.03524 | 0 | 0 |
+| 样条（autofit） | 0.02692 | 0 | 0 |
 
-滚动窗口类滤波器可做到逐点一致。Savitzky–Golay 与两条样条路径的偏差也远小于信号本身的测量分辨量级。
+`calopy/python_extended_result.csv`（由 `calopy/generate_extended_reference.py` 生成）补充了原有对比覆盖不到的情况。这些用例在测试里都以 1e-9 的容差通过：
+- **RER 列**：数值约 0.9，样条在 s=1 时真正起平滑作用。
+- **偶数窗口**：Calopy 界面允许的最小窗口是 2。
+- **VO2 上更大的 s**：100 和 500,000。
+- **含缺失值的输入**。
 
-**两处已知差距**（写明是为了避免把上表误读为“全部完全一致”）：
+### 样条的修改经过
 
-- **Cosinor**（MAE 0.99）：最小二乘条件不同，拟合的节律参数接近但不完全相同。
-- **GAM**（MAE 2.51，r 0.877）：**并非** 完整移植。`GeneralizedAdditiveFilter` 实现的是 LOESS，而 Python 侧是样条基 GAM，二者是不同估计器。可用作平滑器，但不应当作 Python GAM 的数值复现。
+1. **第一版**是基于节点的近似实现，与 Python 的 MAE 为 9.82（结果保留在 `java_spline_result_old.csv`）。
+2. **第二版**改用 Whittaker–Eilers 离散平滑，在 `VO2(3)`、s=10 上 MAE 降到 0.027。
 
-### 平滑重写前后对比
-
-保留 `java_spline_result_old.csv`，便于审计改动：
-
-| 指标 | 重写前 | 重写后 |
-|------|--------|--------|
-| 样条 autofit — 相对 Python 的 MAE | 9.8189 | 0.0269 |
-| 样条 autofit — 相对 Python 的 r | 0.78699 | 1.00000 |
-| 样条 fixed — 相对 Python 的 MAE | 7.6583 | 0.0352 |
-| 样条 fixed — 相对 Python 的 r | 0.86981 | 1.00000 |
+   但这个参数下 scipy 的样条几乎是插值：Python 输出和原始数据只差 MAE 0.019，直接返回原始数据反而比第二版更接近 Python，所以这个数字不能说明两者一致。换到 RER 列（s=1，真正在平滑）时，第二版与 Python 的差距达到平滑幅度的 43%。
+3. **现在**改为逐行移植 FITPACK，所有用例与 scipy 逐位相同。
 
 ### 复现上述数字
 
@@ -104,11 +78,8 @@ import csv
 def compare(py_file, py_col, java_file, java_col):
     p = [float(r[py_col]) for r in csv.DictReader(open(py_file))]
     j = [float(r[java_col]) for r in csv.DictReader(open(java_file))]
-    mae = sum(abs(a - b) for a, b in zip(p, j)) / len(p)
-    mp, mj = sum(p) / len(p), sum(j) / len(j)
-    num = sum((a - mp) * (b - mj) for a, b in zip(p, j))
-    den = (sum((a - mp) ** 2 for a in p) * sum((b - mj) ** 2 for b in j)) ** 0.5
-    print(f"MAE={mae:.5f}  r={num / den:.5f}")
+    diffs = [abs(a - b) for a, b in zip(p, j)]
+    print(f"MAE={sum(diffs) / len(diffs):.3g}  max={max(diffs):.3g}")
 
 compare("calopy/python_spline_result.csv", "Spline_Auto_Python",
         "java_spline_result.csv", "Spline_Auto_Java")
@@ -118,14 +89,12 @@ compare("calopy/python_spline_result.csv", "Spline_Auto_Python",
 
 ## 为什么平滑误差会影响下游指标
 
-间接测热得到连续的 VO₂、VCO₂ 时间序列。真正使用的量往往是衍生量：RER 是比值（VCO₂/VO₂），能量消耗是二者的线性组合。两者都会传播平滑误差，而不是把误差“平均掉”。
+间接测热得到的是连续的 VO₂、VCO₂ 时间序列。实际使用的多是衍生量：RER 是比值（VCO₂/VO₂），能量消耗是两者的线性组合。这两种运算都会把平滑误差传下去，而不是平均掉。
 
-误差的两个性质比绝对大小更重要：
+- **误差是系统性的。** 相邻样本往同一方向偏，在时间窗口内积分或跨个体汇总时不会相互抵消。
+- **比值在分母小时放大误差。** VO₂ 上同样大小的绝对误差，在 RER 上的相对误差与 1/VO₂ 成正比，所以低 VO₂（静息）区间受影响最大，而这些区间往往正是关注的重点。
 
-- **系统性，而非随机。** 节点放置会让邻域样本朝同一方向偏，积分或跨受试者汇总时误差不会相互抵消。
-- **比值在分母较小时会放大误差。** VO₂ 上的固定绝对误差，在 RER 上产生的相对误差与 1/VO₂ 成比例，低 VO₂ 区间（如静息）畸变最大，而这往往正是关注区间。
-
-因此移植以参考实现的输出为校验目标，而不是与原始输入比。对平滑器而言，与原始信号的一致并不是正确性指标：一个把噪声也拟合进去的滤波器，MAE 可以接近 0，却几乎没有平滑效果。与已知可靠实现的偏差，才是值得度量的量。
+因此校验对象是参考实现的输出，而不是原始输入。与原始数据接近并不能说明平滑器正确：一个什么都不做的滤波器，和原始数据的 MAE 是 0。
 
 ---
 
@@ -133,12 +102,18 @@ compare("calopy/python_spline_result.csv", "Spline_Auto_Python",
 
 ```
 calopy2java/
-├── calopy/                  # 参考 Python/Shiny 应用（MIT，上游：computational-discovery-research/calopy）
-│   └── python_*_result.csv  # Python 参考输出，作为对照基线
-├── calojava/                # Java 17 / Maven 信号滤波器移植
-├── example_csv.csv          # 共享输入：5,256 点生理时间序列
-├── java_*_result.csv        # Java 输出，按列与 Python 参考对照
-└── java_*_result_old.csv    # 重写前输出，用于前后对比
+├── calopy/                           # 参考 Python/Shiny 应用（MIT，上游：computational-discovery-research/calopy）
+│   ├── python_*_result.csv           # Python 参考输出
+│   ├── python_extended_result.csv    # 扩展用例的 Python 参考输出
+│   └── *.py                          # 生成上述参考输出的脚本
+├── calojava/                         # Java 17 / Maven 移植
+│   ├── src/main/java/com/calopy/maths/filter   # 各滤波器
+│   ├── src/main/java/com/calopy/maths/spline   # FITPACK 移植
+│   ├── src/main/java/com/calopy/maths/gam      # pygam GAM 移植
+│   └── src/test/java                            # JUnit 测试
+├── example_csv.csv                   # 共享输入：5,256 点生理时间序列
+├── java_*_result.csv                 # Java 输出，按列与 Python 参考对照
+└── java_*_result_old.csv             # 早期版本的输出，用于前后对比
 ```
 
 ---
@@ -152,14 +127,24 @@ cd ./calopy/src
 shiny run --reload --port 8180 --launch-browser ./app.py
 ```
 
+重新生成参考结果（任意目录下均可运行）：
+```bash
+python calopy/generate_extended_reference.py
+```
+
 **Java（calojava）：**
 ```bash
 cd calojava
-mvn clean package
-mvn test
+mvn test            # 17 个测试，约 15 秒
+mvn test -Pslow     # 另外跑 VO2 上的样条 autofit 对比，约 2 分钟
 ```
 
-> 说明：`calojava/src/test` 下的测试当前写死了 Windows 绝对路径。在其他机器上运行前请先改路径。
+重新生成根目录下的 `java_*_result.csv`：
+```bash
+cd calojava
+mvn test-compile dependency:build-classpath -Dmdep.outputFile=cp.txt
+java -cp "target/classes:target/test-classes:$(cat cp.txt)" com.calopy.maths.filter.ExportJavaResults
+```
 
 ---
 
