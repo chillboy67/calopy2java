@@ -4,7 +4,8 @@ import os
 import sys
 
 # 1. 设置路径 (确保能引用到 calopy 源码)
-sys.path.append(os.path.join(os.getcwd(), "src"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(HERE, "src"))
 
 try:
     from calopy.maths.filter.SavgolFilter import SavgolFilter
@@ -17,7 +18,7 @@ except ImportError as e:
 
 def generate_savgol_truth():
     # 2. 读取文件
-    file_path = r"D:\calopy2java\example_csv.csv"
+    file_path = os.path.join(HERE, "..", "example_csv.csv")
     if not os.path.exists(file_path):
         print(f"Error: 文件未找到: {file_path}")
         return
@@ -41,7 +42,7 @@ def generate_savgol_truth():
     results['Savgol_Python'] = res_savgol[target_col]
 
     # 6. 保存到专门的 CSV 文件
-    output_file = "python_savgol_result.csv"
+    output_file = os.path.join(HERE, "python_savgol_result.csv")
     results.to_csv(output_file, index=False)
     print(f"\nSuccess! Savgol ground truth saved to: {os.path.abspath(output_file)}")
 
